@@ -1,0 +1,76 @@
+BOX_IMAGE = "centos/7"
+SETUP_MASTER = true
+SETUP_NODES = true
+NODE_COUNT = 1
+MASTER_IP = "192.168.26.10"
+NODE_IP_NW = "192.168.26."
+POD_NW_CIDR = "10.244.0.0/16"
+
+
+#Generate new using steps in README
+KUBETOKEN = "2gap1b.twr0058pb44negfw"
+
+#k8s node 节点执行的脚本，将节点加入集群
+$kubeminionscript = <<MINIONSCRIPT
+
+sudo kubeadm reset
+
+sudo kubeadm join --discovery-token-unsafe-skip-ca-verification --token #{KUBETOKEN} #{MASTER_IP}:6443
+
+
+MINIONSCRIPT
+
+#k8s master 节点执行的脚本：kubeadm 部署 master 节点
+$kubemasterscript = <<SCRIPT
+
+kubeadm reset
+# --image-repository registry.aliyuncs.com/google_containers：kubernetes 组件阿里云镜像，国内无法直接从 google 拉取
+
+sudo kubeadm init --image-repository registry.aliyuncs.com/google_containers --apiserver-advertise-address=#{MASTER_IP} --pod-network-cidr=#{POD_NW_CIDR} --token #{KUBETOKEN} --token-ttl 0
+
+mkdir -p $HOME/.kube
+sudo cp -Rf /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# 配置flannel 
+kubectl apply -f /vagrant/kube-flannel.yml
+
+
+SCRIPT
+
+
+Vagrant.configure("2") do |config|
+  config.vm.box = BOX_IMAGE
+  config.vm.box_check_update = false
+
+  config.vm.provider "virtualbox" do |l|
+    l.cpus = 4
+    l.memory = "8192"
+  end
+
+  if SETUP_MASTER
+    config.vm.define "master" do |subconfig|
+      subconfig.vm.hostname = "master"
+      subconfig.vm.network :private_network, ip: MASTER_IP
+      subconfig.vm.provider :virtualbox do |vb|
+        vb.customize ["modifyvm", :id, "--cpus", "4"]
+        vb.customize ["modifyvm", :id, "--memory", "8192"]
+      end
+      subconfig.vm.provision :shell, path: "install-centos.sh"
+      subconfig.vm.provision :shell, inline: $kubemasterscript
+      subconfig.vm.provision :shell, path: "set-k8s-node-ip.sh"
+    end
+  end
+  
+  if SETUP_NODES
+    (1..NODE_COUNT).each do |i|
+      config.vm.define "node#{i}" do |subconfig|
+        subconfig.vm.hostname = "node#{i}"
+        subconfig.vm.network :private_network, ip: NODE_IP_NW + "#{i + 10}"
+        subconfig.vm.provision :shell, path: "install-centos.sh"
+        subconfig.vm.provision :shell, inline: $kubeminionscript
+        subconfig.vm.provision :shell, path: "set-k8s-node-ip.sh"
+      end
+    end
+  end
+end
